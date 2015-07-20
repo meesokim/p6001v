@@ -1,0 +1,214 @@
+diff -ur SDL-1.2.15-org/include/SDL_events.h SDL-1.2.15/include/SDL_events.h
+--- SDL-1.2.15-org/include/SDL_events.h	2012-01-19 15:30:05 +0900
++++ SDL-1.2.15/include/SDL_events.h	2013-07-14 07:39:16 +0900
+@@ -74,8 +74,9 @@
+        SDL_EVENT_RESERVED5,		/**< Reserved for future use.. */
+        SDL_EVENT_RESERVED6,		/**< Reserved for future use.. */
+        SDL_EVENT_RESERVED7,		/**< Reserved for future use.. */
++       SDL_DROPFILE,			/**< Drag and drop event */
+        /** Events SDL_USEREVENT through SDL_MAXEVENTS-1 are for your use */
+-       SDL_USEREVENT = 24,
++       SDL_USEREVENT = 25,
+        /** This last event is only for bounding internal arrays
+ 	*  It is the number of bits in the event mask datatype -- Uint32
+         */
+@@ -215,6 +216,14 @@
+ 	void *data2;	/**< User defined data pointer */
+ } SDL_UserEvent;
+ 
++/** Drag and drop event */
++typedef struct SDL_DropEvent
++{
++    Uint32 type;        /**< ::SDL_DROPFILE */
++    Uint32 timestamp;
++    char *file;         /**< The file name, which should be freed with SDL_free() */
++} SDL_DropEvent;
++
+ /** If you want to use this event, you should include SDL_syswm.h */
+ struct SDL_SysWMmsg;
+ typedef struct SDL_SysWMmsg SDL_SysWMmsg;
+@@ -238,6 +247,7 @@
+ 	SDL_ExposeEvent expose;
+ 	SDL_QuitEvent quit;
+ 	SDL_UserEvent user;
++	SDL_DropEvent drop;
+ 	SDL_SysWMEvent syswm;
+ } SDL_Event;
+ 
+diff -ur SDL-1.2.15-org/src/events/SDL_events.c SDL-1.2.15/src/events/SDL_events.c
+--- SDL-1.2.15-org/src/events/SDL_events.c	2012-01-19 15:30:06 +0900
++++ SDL-1.2.15/src/events/SDL_events.c	2013-07-14 07:30:02 +0900
+@@ -500,3 +500,22 @@
+ 	/* Update internal event state */
+ 	return(posted);
+ }
++
++/* Drag and drop event handling code for SDL */
++int SDL_PrivateSendDropFile(const char *file)
++{
++    int posted;
++
++    posted = 0;
++    if (SDL_ProcessEvents[SDL_DROPFILE] == SDL_ENABLE) {
++        SDL_Event event;
++        event.type = SDL_DROPFILE;
++        event.drop.file = SDL_strdup(file);
++		if ( (SDL_EventOK == NULL) || (*SDL_EventOK)(&event) ) {
++			posted = 1;
++			SDL_PushEvent(&event);
++		}
++    }
++    return(posted);
++}
++
+diff -ur SDL-1.2.15-org/src/events/SDL_events_c.h SDL-1.2.15/src/events/SDL_events_c.h
+--- SDL-1.2.15-org/src/events/SDL_events_c.h	2012-01-19 15:30:06 +0900
++++ SDL-1.2.15/src/events/SDL_events_c.h	2013-07-14 07:50:51 +0900
+@@ -63,6 +63,7 @@
+ extern int SDL_PrivateExpose(void);
+ extern int SDL_PrivateQuit(void);
+ extern int SDL_PrivateSysWMEvent(SDL_SysWMmsg *message);
++extern int SDL_PrivateSendDropFile(const char *file);
+ 
+ /* Used to clamp the mouse coordinates separately from the video surface */
+ extern void SDL_SetMouseRange(int maxX, int maxY);
+diff -ur SDL-1.2.15-org/src/video/windib/SDL_dibevents.c SDL-1.2.15/src/video/windib/SDL_dibevents.c
+--- SDL-1.2.15-org/src/video/windib/SDL_dibevents.c	2012-01-19 15:30:06 +0900
++++ SDL-1.2.15/src/video/windib/SDL_dibevents.c	2013-07-14 07:51:40 +0900
+@@ -23,6 +23,7 @@
+ 
+ #define WIN32_LEAN_AND_MEAN
+ #include <windows.h>
++#include <shellapi.h>
+ 
+ #include "SDL_main.h"
+ #include "SDL_events.h"
+@@ -269,6 +270,17 @@
+ 				TranslateKey(wParam,HIWORD(lParam),&keysym,0));
+ 		}
+ 		return(0);
++		
++		case WM_DROPFILES: {
++			char path[PATH_MAX];
++			HDROP drop = (HDROP)wParam;
++			if (DragQueryFile(drop, 0, path, sizeof(path))){
++				SDL_PrivateSendDropFile(path);
++			}
++			DragFinish(drop);
++		}
++		return(0);
++
+ #if defined(SC_SCREENSAVE) && defined(SC_MONITORPOWER)
+ 		case WM_SYSCOMMAND: {
+ 			const DWORD val = (DWORD) (wParam & 0xFFF0);
+@@ -383,7 +395,10 @@
+ 	GetKeyboardLayoutName(current_layout);
+ 	//printf("Initial Keyboard Layout Name: '%s'\n", current_layout);
+ 
+-	hLayoutUS = LoadKeyboardLayout("00000409", KLF_NOTELLSHELL);
++	if( GetKeyboardType(0) == 7 )
++		hLayoutUS = LoadKeyboardLayout("E0010411", KLF_NOTELLSHELL);
++	else
++		hLayoutUS = LoadKeyboardLayout("00000409", KLF_NOTELLSHELL);
+ 
+ 	if (!hLayoutUS) {
+ 		//printf("Failed to load US keyboard layout. Using current.\n");
+@@ -534,6 +549,14 @@
+ 	Arrows_keymap[2] = 0x26;
+ 	Arrows_keymap[1] = 0x27;
+ 	Arrows_keymap[0] = 0x28;
++
++	if( GetKeyboardType(0) == 7 ){
++		VK_keymap[VK_APOSTROPHE] = SDLK_CARET;
++		VK_keymap[VK_GRAVE] = SDLK_AT;
++		VK_keymap[VK_EQUALS] = SDLK_SEMICOLON;
++		VK_keymap[VK_SEMICOLON] = SDLK_COLON;
++		VK_keymap[VK_PROCESSKEY] = SDLK_BACKQUOTE;
++	}
+ }
+ 
+ #define EXTKEYPAD(keypad) ((scancode & 0x100)?(mvke):(keypad))
+@@ -546,6 +569,19 @@
+ 	int	mvke  = MapVirtualKey(scancode & 0xFF, 1);
+ #endif
+ 
++	if( GetKeyboardType(0) == 7 )
++		switch(vkey) {
++			case VK_LBRACKET:	// [
++			case VK_RBRACKET:	// ]
++			case VK_OEM_102:	// _
++			case VK_APOSTROPHE:	// ^
++			case VK_GRAVE:		// @
++			case VK_EQUALS:		// ;
++			case VK_SEMICOLON:	// :
++			case VK_PROCESSKEY:	// Han/Zen
++				return vkey;
++		}
++	
+ 	switch(vkey) {
+ 		/* These are always correct */
+ 		case VK_DIVIDE:
+@@ -684,6 +720,9 @@
+ 	*/
+ 	WIN_FlushMessageQueue();
+ 
++    /* Enable dropping files */
++    DragAcceptFiles(SDL_Window, TRUE);
++
+ 	return(0);
+ }
+ 
+diff -ur SDL-1.2.15-org/src/video/windx5/SDL_dx5events.c SDL-1.2.15/src/video/windx5/SDL_dx5events.c
+--- SDL-1.2.15-org/src/video/windx5/SDL_dx5events.c	2012-01-19 15:30:06 +0900
++++ SDL-1.2.15/src/video/windx5/SDL_dx5events.c	2013-07-14 07:51:46 +0900
+@@ -24,6 +24,7 @@
+ /* CAUTION!!!!  If you modify this file, check ../windib/SDL_sysevents.c */
+ 
+ #include "directx.h"
++#include <shellapi.h>
+ 
+ #include "SDL_main.h"
+ #include "SDL_events.h"
+@@ -600,6 +601,16 @@
+ 		}
+ 		return(0);
+ 
++		case WM_DROPFILES: {
++			char path[PATH_MAX];
++			HDROP drop = (HDROP)wParam;
++			if (DragQueryFile(drop, 0, path, sizeof(path))){
++				SDL_PrivateSendDropFile(path);
++			}
++			DragFinish(drop);
++		}
++		return(0);
++
+ #if defined(SC_SCREENSAVE) || defined(SC_MONITORPOWER)
+ 		/* Don't allow screen savers or monitor power downs.
+ 		   This is because they quietly clear DirectX surfaces.
+@@ -894,6 +905,15 @@
+ 	DIK_keymap[DIK_LWIN] = SDLK_LMETA;
+ 	DIK_keymap[DIK_RWIN] = SDLK_RMETA;
+ 	DIK_keymap[DIK_APPS] = SDLK_MENU;
++	
++	if( GetKeyboardType(0) == 7 ){
++		DIK_keymap[DIK_YEN] = SDLK_BACKSLASH;
++		DIK_keymap[DIK_CIRCUMFLEX] = SDLK_CARET;
++		DIK_keymap[DIK_AT] = SDLK_AT;
++		DIK_keymap[DIK_COLON] = SDLK_COLON;
++		DIK_keymap[DIK_KANJI] = SDLK_BACKQUOTE;
++		DIK_keymap[DIK_BACKSLASH] = SDLK_LESS;
++	}
+ }
+ 
+ static SDL_keysym *TranslateKey(UINT scancode, SDL_keysym *keysym, int pressed)
+@@ -980,6 +1000,9 @@
+ 	*/
+ 	WIN_FlushMessageQueue();
+ 
++    /* Enable dropping files */
++    DragAcceptFiles(SDL_Window, TRUE);
++
+ 	/* Ready to roll */
+ 	return(0);
+ }
